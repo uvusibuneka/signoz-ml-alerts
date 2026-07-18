@@ -1,190 +1,119 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/readme-assets/signoz-hero-dark.png" width="900">
-    <source media="(prefers-color-scheme: light)" srcset="docs/readme-assets/signoz-hero-light.png" width="900">
-    <img alt="SigNoz - Observability on Your Terms, Powered by Open Standards." src="docs/readme-assets/signoz-hero-light.png" width="900">
-  </picture>
-</p>
+# ML Anomaly Alert Mode
 
-<p align="center">
-  <a href="README.zh-cn.md">中文</a> ·
-  <a href="README.de-de.md">Deutsch</a> ·
-  <a href="README.pt-br.md">Português</a>
-</p>
+Related to #9360 (`AI/ML forecasting for metrics`)
+Would appreciate a look from @therealpandey or @srikanthccv, especially around anomaly-rule integration and backend alert evaluation.
 
-<p align="center">
-  <a href="https://github.com/SigNoz/signoz/issues"><img alt="GitHub issues" src="https://img.shields.io/github/issues/SigNoz/signoz"></a>
-  <a href="https://github.com/SigNoz/signoz/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/SigNoz/signoz?label=release"></a>
-  <a href="https://signoz.io/slack"><img alt="Slack community" src="https://img.shields.io/badge/slack-community-4A154B?logo=slack&logoColor=white"></a>
-  <a href="https://www.linkedin.com/company/signozio/"><img alt="LinkedIn" src="https://img.shields.io/badge/linkedin-SigNoz-0A66C2?logo=linkedin&logoColor=white"></a>
-  <a href="https://twitter.com/intent/tweet?text=Monitor%20your%20applications%20and%20troubleshoot%20problems%20with%20SigNoz,%20an%20open-source%20alternative%20to%20DataDog,%20NewRelic.&url=https://signoz.io/&via=SigNozHQ&hashtags=opensource,signoz,observability"><img alt="Tweet" src="https://img.shields.io/twitter/url/http/shields.io.svg?style=social"></a>
-</p>
+## Summary
 
-SigNoz is an open-source observability platform built on OpenTelemetry. We’re building an enterprise-grade alternative to fragmented monitoring stacks, with logs, metrics, traces, alerts, and dashboards in one place.
+PR adds a new `ML` anomaly detection mode for SigNoz anomaly alerts alongside the existing `Standard` mode.
 
-### Choose how to run SigNoz
+The goal is to retain the current z-score detector as a strong baseline with a temporal ML detector to capture more complex pattern deviations.
 
-#### SigNoz Cloud (Recommended)
+New option `ML` is available in the anomaly algorithm dropdown.
 
-Fully managed SigNoz with a 30-day free trial, no credit card required, usage-based pricing that starts at $49, and regional data hosting.
+## Reproduction
 
-[**Start free →**](https://signoz.io/teams/)
+### Use the feature in UI
 
-#### Enterprise
+1. Open SigNoz.
+2. Go to `Alerts`.
+3. Create a new anomaly alert.
+4. Select a metric query.
+5. In the anomaly algorithm selector, choose either:
+   - `Standard`
+   - `ML`
+6. Compare alert behavior on the same metric and time range.
 
-Enterprise Cloud, BYOC, or Enterprise Self-Hosted with compliance, support, custom retention, RBAC, ingestion controls, data residency, and region selection.
+## Visual comparison
 
-[**Explore Enterprise →**](https://signoz.io/enterprise/)
+![ML vs Standard anomaly detection on NAB AWS metrics](docs/images/ml-vs-standard-nab-multicase-all.png)
 
-#### Community
+## Benchmark summary
 
-Free open-source SigNoz that runs in your own infrastructure. Deploy with Docker, Kubernetes, or Linux and keep full control of your data plane.
+The table below uses the common subset of NAB `realAWSCloudwatch` series where both `Standard` and the final `ML` detector can be compared directly.
 
-[**Install SigNoz →**](https://signoz.io/docs/install/self-host/)
+`FP` means false-positive events: alert events raised outside labeled anomaly windows. Lower is better.
 
-### What can you monitor?
+| Algorithm | Precision | Recall | Event F1 | FP events | Detected windows | Missed windows |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Standard | 0.0538 | 0.5000 | 0.0971 | 176 | 10 | 10 |
+| ML | **0.2619** | **0.5500** | **0.3548** | **31** | **11** | **9** |
 
-SigNoz helps teams debug production issues faster by connecting logs, metrics, traces, alerts, dashboards, exceptions, and agent-native workflows in one place.
+These are common-coverage benchmark metrics. The chart above shows representative examples chosen from the same NAB AWS corpus.
 
-#### APM Overview
+### Metric definitions
 
-Monitor service latency, error rate, throughput, Apdex, top endpoints, database calls, and external calls.
+- `Precision`: the share of raised anomaly events that were actually correct. Higher is better.
+- `Recall`: the share of labeled anomaly windows that the detector successfully caught. Higher is better.
+- `Event F1`: the harmonic mean of precision and recall. Higher is better.
+- `FP events`: false-positive alert events raised outside labeled anomaly windows. Lower is better.
+- `Detected windows`: the number of labeled anomaly windows that were hit by at least one detector event. Higher is better.
+- `Missed windows`: the number of labeled anomaly windows that were not detected at all. Lower is better.
 
-<p align="center">
-  <img alt="SigNoz APM dashboard showing latency, throughput, Apdex, and key operations" src="docs/readme-assets/monitor/apm.png" width="900">
-</p>
+### Dataset
 
-Learn more: [APM documentation](https://signoz.io/docs/instrumentation/overview/)
+We evaluated the detector on the Numenta Anomaly Benchmark (NAB), using the `realAWSCloudwatch` subset:
 
-#### Log Management
+- [Numenta Anomaly Benchmark (NAB)](https://github.com/numenta/NAB)
 
-Ingest, search, aggregate, and correlate logs with traces and metrics using a visual query builder.
+The visual comparison in this PR is taken from that same corpus.
 
-<p align="center">
-  <img alt="SigNoz logs explorer with filters, frequency chart, and log lines" src="docs/readme-assets/monitor/log-management.svg" width="900">
-</p>
 
-Learn more: [Log management documentation](https://signoz.io/docs/logs-management/overview/)
+## What Changed
 
-#### Metrics and Dashboards
+### Backend
 
-Build dashboards for application, infrastructure, and custom metrics using Query Builder, PromQL, or ClickHouse SQL.
+- Added a temporal ML anomaly provider in [ee/anomaly/ml_provider.go](./ee/anomaly/ml_provider.go).
+- The provider wraps the existing anomaly provider and uses it as a fallback baseline during warmup.
+- After warmup, the provider builds temporal feature vectors from recent series history and evaluates them with a rolling KMeans ensemble.
+- Final anomaly decisions are based on model consensus.
 
-<p align="center">
-  <img alt="SigNoz host metrics dashboard with system load and network charts" src="docs/readme-assets/monitor/metrics.png" width="900">
-</p>
+### Frontend
 
-Learn more: [Metrics documentation](https://signoz.io/docs/metrics-management/overview/)
+- Added `ML` to the anomaly algorithm enum in [frontend/src/container/CreateAlertV2/context/types.ts](./frontend/src/container/CreateAlertV2/context/types.ts).
+- Added the `ML` option to the algorithm selector in [frontend/src/container/CreateAlertV2/context/constants.ts](./frontend/src/container/CreateAlertV2/context/constants.ts).
 
-#### Infrastructure Monitoring
+## Methods
 
-Monitor Kubernetes clusters, pods, nodes, workloads, and host-level CPU, memory, disk, network, logs, and traces.
+### Standard
 
-<p align="center">
-  <img alt="SigNoz Kubernetes infrastructure dashboard with pod and node metrics" src="docs/readme-assets/monitor/infrastructure.png" width="900">
-</p>
+The existing SigNoz anomaly score is z-score-like: it computes an expected value from seasonal context and measures deviation relative to standard deviation.
 
-Learn more: [Infrastructure monitoring documentation](https://signoz.io/docs/infrastructure-monitoring/overview/)
+### ML
 
-#### LLM and AI Observability
+The new `ML` mode works as a temporal detector:
 
-Trace LLM apps, RAG pipelines, prompts, tool calls, tokens, latency, and costs alongside application and infrastructure telemetry.
+1. During warmup it falls back to the base anomaly provider.
+2. It builds temporal features from recent history.
+3. It trains a rolling ensemble of temporal KMeans models over time windows.
+4. A point is considered anomalous only when the ensemble consensus says it deviates from learned normal behavior.
 
-<p align="center">
-  <img alt="SigNoz LLM observability dashboard for traces, token usage, latency, and costs" src="docs/readme-assets/monitor/llm.png" width="900">
-</p>
+## Files Changed
 
-Learn more: [LLM observability documentation](https://signoz.io/docs/llm-observability/)
+- [ee/anomaly/ml_provider.go](./ee/anomaly/ml_provider.go)
+  Adds the temporal ML anomaly provider, warmup fallback behavior, temporal feature extraction, rolling model training, and consensus scoring.
 
-#### Agent-Native Observability and MCP
+- [ee/anomaly/ml_provider_test.go](./ee/anomaly/ml_provider_test.go)
+  Covers provider behavior, warmup flow, temporal scoring, consensus decisions, and NAB-based regression checks.
 
-Use the SigNoz MCP server to bring telemetry into coding agents, or use Noz inside SigNoz to investigate incidents, tune alerts, and build dashboards with production context. [Noz](https://signoz.io/docs/ai/noz/) is available only on SigNoz Cloud.
+- [frontend/src/container/CreateAlertV2/context/types.ts](./frontend/src/container/CreateAlertV2/context/types.ts)
+  Adds the `ML` algorithm enum value.
 
-<p align="center">
-  <img alt="SigNoz Noz interface alongside MCP-powered agent workflow" src="docs/readme-assets/monitor/agent-native.png" width="900">
-</p>
+- [frontend/src/container/CreateAlertV2/context/constants.ts](./frontend/src/container/CreateAlertV2/context/constants.ts)
+  Adds the `ML` dropdown option in the anomaly alert creation flow.
 
-Learn more: [SigNoz MCP server docs](https://signoz.io/docs/ai/signoz-mcp-server/) · [Agent skills docs](https://signoz.io/docs/ai/agent-skills/#install-the-plugin)
+## Dataset
 
-#### Distributed Tracing
+We used the Numenta Anomaly Benchmark (NAB) real-world corpus, specifically the `realAWSCloudwatch` subset for system-metric-style evaluation.
 
-Follow requests across services with flamegraphs, waterfalls, span events, filters, and trace analytics.
+Primary source:
 
-<p align="center">
-  <img alt="SigNoz distributed trace view with flamegraph and waterfall spans" src="docs/readme-assets/monitor/distributed-tracing.png" width="900">
-</p>
+- [Numenta Anomaly Benchmark (NAB)](https://github.com/numenta/NAB)
 
-Learn more: [Distributed tracing documentation](https://signoz.io/docs/instrumentation/)
+NAB describes itself as a benchmark for real-time anomaly detection on streaming time series and includes labeled real-world and synthetic datasets.
 
-#### Trace Funnels
+For the visual comparisons in this PR we focused on:
 
-Create funnels from traces to understand request-flow drop-offs, failed transitions, and systemic workflow issues.
-
-<p align="center">
-  <img alt="SigNoz trace funnels showing request-flow drop-offs and failed transitions" src="docs/readme-assets/monitor/trace-funnels.png" width="900">
-</p>
-
-Learn more: [Trace funnels documentation](https://signoz.io/docs/trace-funnels/overview/)
-
-Also monitor: [**exceptions**](https://signoz.io/docs/userguide/exceptions/), [**alerts**](https://signoz.io/docs/alerts/), [**external APIs**](https://signoz.io/docs/external-api-monitoring/overview/), and [**integrations**](https://signoz.io/docs/integrations/integrations-list/) for OpenTelemetry, Prometheus, Kubernetes, cloud providers, language SDKs, application frameworks, databases, and LLM tools.
-
-### Why teams use SigNoz
-
-1. **OpenTelemetry-native**<br>
-   Instrument once with open standards and keep ownership of your telemetry.
-2. **Correlated signals**<br>
-   Move from service charts to traces, logs, infra metrics, and exceptions without switching tools.
-3. **Single columnar database**<br>
-   Built for high-cardinality, high-volume observability workloads.
-4. **Predictable pricing**<br>
-   No per-host pricing, no user-seat pricing, and no special pricing for custom metrics.
-5. **Enterprise ready**<br>
-   SOC 2 Type II and HIPAA compliance, RBAC, ingestion controls, custom retention, support, BYOC, and self-hosting.
-
-### Getting started
-
-#### Start on Cloud
-
-Create a managed SigNoz workspace and get your first dashboard without running observability infrastructure.
-
-[**Start free on SigNoz Cloud**](https://signoz.io/teams/)
-
-#### Self-host SigNoz
-
-Run SigNoz in your own infrastructure with Foundry, Docker, Kubernetes, or Linux.
-
-[**Foundry**](https://github.com/SigNoz/foundry) · [**Docker**](https://signoz.io/docs/install/docker/) · [**Kubernetes**](https://signoz.io/docs/install/kubernetes/) · [**Linux**](https://signoz.io/docs/install/linux/)
-
-#### Send data
-
-Instrument applications and infrastructure with OpenTelemetry, Prometheus, language SDKs, and integrations.
-
-[**Instrumentation**](https://signoz.io/docs/instrumentation/) · [**Integrations**](https://signoz.io/docs/integrations/integrations-list/)
-
-### Comparisons to familiar tools
-
-SigNoz is often adopted by teams moving from a stack of single-purpose tools or commercial platforms with unpredictable pricing.
-
-**Prometheus**<br>
-Good if you just need metrics. SigNoz keeps metrics, logs, traces, dashboards, and alerts together so teams can debug with correlated context.
-
-**Jaeger**<br>
-Jaeger only does distributed tracing. SigNoz adds metrics, logs, trace analytics, dashboards, alerts, exceptions, and trace-to-log workflows.
-
-**Elastic**<br>
-SigNoz uses columnar database for efficient observability analytics and high-cardinality log workloads, with 50% lower resource requirement compared to Elastic during ingestion. Check the [detailed study](https://signoz.io/blog/logs-performance-benchmark/?utm_source=github-readme&utm_medium=logs-benchmark).
-
-**Loki**<br>
-In the linked benchmark, SigNoz indexed all keys in the test setup, while Loki hit max stream errors when more labels were added. Check the [detailed study](https://signoz.io/blog/logs-performance-benchmark/?utm_source=github-readme&utm_medium=logs-benchmark).
-
-## Contributing
-
-We ❤️ contributions big or small. Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get started with making contributions to SigNoz.
-
-Not sure how to get started? **Just ping us on `#contributing` in our [slack community](https://signoz.io/slack).**
-
-As always, thanks to our amazing contributors!
-
-<a href="https://github.com/signoz/signoz/graphs/contributors">
-  <img alt="SigNoz contributors" src="https://contrib.rocks/image?repo=signoz/signoz" />
-</a>
+- `realAWSCloudwatch/ec2_cpu_utilization_5f5533.csv`
+- `realAWSCloudwatch/ec2_disk_write_bytes_c0d644.csv`
+- `realAWSCloudwatch/ec2_cpu_utilization_77c1ca.csv`
